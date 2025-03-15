@@ -7,8 +7,8 @@ import sys
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.firefox.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
@@ -38,8 +38,8 @@ USER_AGENTS = [
 # Lock for synchronized console printing
 print_lock = threading.Lock()
 
-# Create directory for Firefox profiles if it doesn't exist
-PROFILES_DIR = "/tmp/firefox_profiles"
+# Create directory for Chrome profiles if it doesn't exist
+PROFILES_DIR = "/tmp/chrome_profiles"
 os.makedirs(PROFILES_DIR, exist_ok=True)
 
 # Create directory for logs
@@ -84,58 +84,52 @@ def simulate_human_behavior(driver):
             print(f"Cannot interact with video: {str(e)}")
 
 def create_driver(session_id, profile_id):
-    """Create a Firefox WebDriver instance with proper configuration"""
+    """Create a Chrome WebDriver instance with proper configuration"""
     options = Options()
     
     # Enable headless mode properly
-    options.add_argument("--headless")
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
     
     # Use random user agent
     user_agent = random.choice(USER_AGENTS)
-    options.set_preference("general.useragent.override", user_agent)
-    
-    # Critical settings for stability in containerized environments
-    options.set_preference("media.volume_scale", "0.0")
-    options.set_preference("browser.sessionstore.resume_from_crash", False)
-    options.set_preference("toolkit.startup.max_resumed_crashes", -1)
-    options.set_preference("media.autoplay.default", 0)
-    options.set_preference("media.autoplay.blocking_policy", 0)
-    options.set_preference("media.autoplay.allow-muted", True)
-    options.set_preference("media.autoplay.enabled.user-gestures-needed", False)
+    options.add_argument(f"user-agent={user_agent}")
     
     # Set up new profile for each session
     profile_path = os.path.join(PROFILES_DIR, f"profile-{session_id}-{profile_id}")
     os.makedirs(profile_path, exist_ok=True)
-    options.set_preference("profile", profile_path)
+    options.add_argument(f"--user-data-dir={profile_path}")
     
-    # Disable notifications and updates
-    options.set_preference("dom.webnotifications.enabled", False)
-    options.set_preference("app.update.enabled", False)
+    # Disable notifications and popups
+    options.add_argument("--disable-notifications")
+    options.add_argument("--disable-popup-blocking")
     
-    # Disable GPU acceleration
-    options.set_preference("layers.acceleration.disabled", True)
-    
-    # Configure marionette
-    options.set_preference("marionette.enabled", True)
-    options.set_preference("marionette.log.level", "Trace")  # Increase logging level
+    # Media settings
+    options.add_argument("--autoplay-policy=no-user-gesture-required")
+    options.add_argument("--use-fake-ui-for-media-stream")
+    options.add_argument("--use-fake-device-for-media-stream")
     
     # Performance settings
-    options.set_preference("network.http.connection-timeout", 10)
-    options.set_preference("dom.ipc.processCount", 1)
-    options.set_preference("javascript.options.mem.gc_frequency", 1500)
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--disable-web-security")
+    options.add_argument("--allow-running-insecure-content")
+    options.add_argument("--window-size=1366,768")
     
-    # Set log path and create service
-    log_path = os.path.join(LOGS_DIR, f"geckodriver-{session_id}-{profile_id}.log")
+    # Log settings
+    log_path = os.path.join(LOGS_DIR, f"chromedriver-{session_id}-{profile_id}.log")
+    
+    # Create service
     service = Service(
-        executable_path='/usr/local/bin/geckodriver',
+        executable_path='/usr/local/bin/chromedriver',
         log_path=log_path
     )
     
     try:
-        # Create driver with proper configuration - FIXED: removed service_log_path
-        driver = webdriver.Firefox(
+        # Create driver with proper configuration
+        driver = webdriver.Chrome(
             service=service, 
             options=options
         )
@@ -143,7 +137,7 @@ def create_driver(session_id, profile_id):
         return driver
     except Exception as e:
         with print_lock:
-            print(f"Thread {session_id}: Failed to create Firefox driver: {str(e)}")
+            print(f"Thread {session_id}: Failed to create Chrome driver: {str(e)}")
         return None
 
 def view_video(url, session_id, views_per_thread):
@@ -159,9 +153,9 @@ def view_video(url, session_id, views_per_thread):
         
         while retry_count < max_retries and driver is None:
             try:
-                # Verify Firefox is running properly before creating driver
+                # Verify Chrome is running properly before creating driver
                 with print_lock:
-                    print(f"Thread {session_id}: Starting Firefox (attempt {retry_count + 1})...")
+                    print(f"Thread {session_id}: Starting Chrome (attempt {retry_count + 1})...")
                 
                 # Create the driver
                 driver = create_driver(session_id, profile_id)
@@ -169,21 +163,14 @@ def view_video(url, session_id, views_per_thread):
                     raise Exception("Failed to initialize driver")
                 
                 with print_lock:
-                    print(f"Thread {session_id}: Firefox driver created successfully")
-                
-                # Try to set window size
-                try:
-                    driver.set_window_size(1366, 768)
-                except Exception:
-                    # Not critical if this fails
-                    pass
+                    print(f"Thread {session_id}: Chrome driver created successfully")
                 
                 break  # Driver created successfully
                 
             except Exception as e:
                 retry_count += 1
                 with print_lock:
-                    print(f"Thread {session_id}: Firefox init attempt {retry_count} failed: {str(e)}")
+                    print(f"Thread {session_id}: Chrome init attempt {retry_count} failed: {str(e)}")
                 
                 if driver is not None:
                     try:
@@ -192,10 +179,10 @@ def view_video(url, session_id, views_per_thread):
                         pass
                     driver = None
                 
-                # Process management - check for stray Firefox processes
+                # Process management - check for stray Chrome processes
                 try:
-                    subprocess.run(["pkill", "-f", "firefox"], stderr=subprocess.DEVNULL)
-                    subprocess.run(["pkill", "-f", "geckodriver"], stderr=subprocess.DEVNULL)
+                    subprocess.run(["pkill", "-f", "chrome"], stderr=subprocess.DEVNULL)
+                    subprocess.run(["pkill", "-f", "chromedriver"], stderr=subprocess.DEVNULL)
                 except:
                     pass
                     
@@ -205,7 +192,7 @@ def view_video(url, session_id, views_per_thread):
         # If we couldn't create a driver after all retries, skip this iteration
         if driver is None:
             with print_lock:
-                print(f"Thread {session_id}: Failed to create Firefox driver after {max_retries} attempts. Skipping.")
+                print(f"Thread {session_id}: Failed to create Chrome driver after {max_retries} attempts. Skipping.")
             time.sleep(random.uniform(10, 20))
             continue
         
@@ -298,9 +285,9 @@ def view_video(url, session_id, views_per_thread):
                 with print_lock:
                     print(f"Thread {session_id}: Error when closing driver: {str(e)}")
                 
-                # Force kill Firefox processes if normal quit fails
+                # Force kill Chrome processes if normal quit fails
                 try:
-                    subprocess.run(["pkill", "-f", f"firefox.*{session_id}"], stderr=subprocess.DEVNULL)
+                    subprocess.run(["pkill", "-f", f"chrome.*{session_id}"], stderr=subprocess.DEVNULL)
                 except:
                     pass
         
@@ -356,10 +343,10 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\nProcess interrupted by user. Shutting down...")
-        # Force kill Firefox and geckodriver processes
+        # Force kill Chrome and chromedriver processes
         try:
-            subprocess.run(["pkill", "-f", "firefox"], stderr=subprocess.DEVNULL)
-            subprocess.run(["pkill", "-f", "geckodriver"], stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-f", "chrome"], stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-f", "chromedriver"], stderr=subprocess.DEVNULL)
         except:
             pass
         sys.exit(0)

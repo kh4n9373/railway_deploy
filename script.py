@@ -1,6 +1,9 @@
 import time
 import random
 import threading
+import os
+import logging
+from concurrent.futures import ThreadPoolExecutor, wait
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -9,13 +12,21 @@ from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-import concurrent.futures
-import os
 
-# Thời gian xem tối thiểu để được tính là view (>30s)
-MIN_WATCH_TIME = 35  # Thêm 5s để đảm bảo
+# Configuration
+MIN_WATCH_TIME = 35  # Minimum watch time in seconds (30s + 5s buffer)
+MAX_CONCURRENT_BROWSERS = 2  # Limit concurrent browser instances
+PROFILES_DIR = "/tmp/firefox_profiles"
+os.makedirs(PROFILES_DIR, exist_ok=True)
 
-# Danh sách các trang để mô phỏng việc tìm đến video từ nguồn hợp lệ
+# Setup logging instead of print locks
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger('view_bot')
+
+# Reference sites and user agents
 REFERRAL_SITES = [
     "https://www.google.com/search?q=ca+khúc+hay+2023",
     "https://www.google.com/search?q=youtube+music+videos",
@@ -24,7 +35,6 @@ REFERRAL_SITES = [
     "https://www.youtube.com/"
 ]
 
-# User agents khác nhau để tạo sự đa dạng
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15",
@@ -33,189 +43,204 @@ USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
 ]
 
-# Khóa tạo đồng bộ cho việc in ra console
-print_lock = threading.Lock()
+# Global semaphore to limit concurrent browser instances
+browser_semaphore = threading.Semaphore(MAX_CONCURRENT_BROWSERS)
+# Global counter for completed views
+completed_views = 0
+views_lock = threading.Lock()
 
-# Tạo thư mục cho profile firefox nếu chưa tồn tại
-PROFILES_DIR = "/tmp/firefox_profiles"
-os.makedirs(PROFILES_DIR, exist_ok=True)
+def get_optimized_firefox_options(session_id, view_num):
+    """Create optimized Firefox options to reduce resource usage"""
+    options = Options()
+    
+    # Essential headless settings
+    options.add_argument("--headless")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--window-size=1024x768")  # Reduced window size
+    
+    # Memory optimization preferences
+    options.set_preference("browser.cache.disk.enable", False)
+    options.set_preference("browser.cache.memory.enable", False)
+    options.set_preference("browser.cache.offline.enable", False)
+    options.set_preference("network.http.use-cache", False)
+    options.set_preference("media.volume_scale", "0.0")
+    
+    # Disable unnecessary features
+    options.set_preference("browser.tabs.remote.autostart", False)
+    options.set_preference("dom.webnotifications.enabled", False)
+    options.set_preference("app.update.enabled", False)
+    options.set_preference("extensions.update.enabled", False)
+    options.set_preference("browser.download.manager.addToRecentDocs", False)
+    
+    # Lower content process limit
+    options.set_preference("dom.ipc.processCount", 1)
+    
+    # Lower memory limits
+    options.set_preference("browser.sessionhistory.max_entries", 5)
+    options.set_preference("browser.sessionhistory.max_total_viewers", 1)
+    
+    # Use low-end device mode
+    options.set_preference("layers.acceleration.disabled", True)
+    
+    # Use random user agent
+    user_agent = random.choice(USER_AGENTS)
+    options.set_preference("general.useragent.override", user_agent)
+    
+    # Profile management
+    profile_path = os.path.join(PROFILES_DIR, f"profile-{session_id}-{view_num}")
+    os.makedirs(profile_path, exist_ok=True)
+    options.set_preference("profile", profile_path)
+    
+    return options
 
 def simulate_human_behavior(driver):
-    """Mô phỏng hành vi người dùng thực: cuộn trang, dừng video, tiếp tục, thay đổi âm lượng"""
+    """Simulate minimal human-like behavior to reduce resource usage"""
     try:
-        # Đợi cho đến khi player video được tải
-        video = WebDriverWait(driver, 10).until(
+        # Wait for video player to load with reduced timeout
+        video = WebDriverWait(driver, 8).until(
             EC.presence_of_element_located((By.TAG_NAME, "video"))
         )
         
-        # Tương tác với video như người thật sau 5-10 giây xem
-        time.sleep(random.uniform(5, 10))
+        # Reduced interactions
+        time.sleep(random.uniform(3, 5))
         
-        # Hành động ngẫu nhiên: tạm dừng và tiếp tục
-        if random.random() > 0.5:
-            driver.find_element(By.TAG_NAME, 'body').send_keys('k')  # Phím tắt pause/play
-            time.sleep(random.uniform(1, 3))
-            driver.find_element(By.TAG_NAME, 'body').send_keys('k')  # Tiếp tục phát
-        
-        # Đôi khi cuộn xuống để xem bình luận
-        if random.random() > 0.7:
-            driver.execute_script("window.scrollBy(0, 500);")
-            time.sleep(random.uniform(2, 5))
-            driver.execute_script("window.scrollBy(0, -500);")  # Cuộn lại lên video
-        
-        # Thỉnh thoảng thay đổi âm lượng
-        if random.random() > 0.6:
-            driver.find_element(By.TAG_NAME, 'body').send_keys(random.choice(['m', '0']))  # Tắt/bật tiếng hoặc đặt âm lượng về 0
-
+        # Only perform one random action with 30% probability
+        if random.random() < 0.3:
+            action = random.choice([
+                lambda: driver.find_element(By.TAG_NAME, 'body').send_keys('k'),  # Pause/play
+                lambda: driver.execute_script("window.scrollBy(0, 300);"),  # Scroll down
+                lambda: driver.find_element(By.TAG_NAME, 'body').send_keys('m'),  # Mute
+            ])
+            action()
+    
     except (TimeoutException, NoSuchElementException) as e:
-        with print_lock:
-            print(f"Không thể tương tác với video: {str(e)}")
+        logger.warning(f"Could not interact with video: {str(e)}")
 
-def view_video(url, session_id, views_per_thread):
-    """Hàm xem video với các chiến lược để được tính là view hợp lệ"""
+def view_video(url, session_id, views_per_thread, view_counter):
+    """View video function with resource optimizations"""
     views_completed = 0
     
     while views_completed < views_per_thread:
-        options = Options()
-        
-        # Thiết lập Firefox headless đúng cách
-        options.add_argument("--headless")
-        options.add_argument("--disable-dev-shm-usage")  # Hạn chế lỗi bộ nhớ chia sẻ
-        options.add_argument("--no-sandbox")  # Tắt sandbox để tránh lỗi
-        options.add_argument("--window-size=1280x1024")
-                
-        # Sử dụng user agent ngẫu nhiên
-        user_agent = random.choice(USER_AGENTS)
-        options.set_preference("general.useragent.override", user_agent)
-        
-        # Vô hiệu hóa một số tính năng không cần thiết để tránh lỗi
-        options.set_preference("media.volume_scale", "0.0")
-        options.set_preference("browser.download.folderList", 2)
-        options.set_preference("browser.download.manager.showWhenStarting", False)
-        options.set_preference("browser.helperApps.neverAsk.saveToDisk", "application/octet-stream")
-        
-        # Thiết lập profile mới cho từng phiên
-        profile_path = os.path.join(PROFILES_DIR, f"profile-{session_id}-{views_completed}")
-        os.makedirs(profile_path, exist_ok=True)
-        options.set_preference("profile", profile_path)
-        
-        # Vô hiệu hóa thông báo và một số tính năng để tránh lỗi
-        options.set_preference("dom.webnotifications.enabled", False)
-        options.set_preference("app.update.enabled", False)
-        
-        # Tắt GPU để tránh sự cố trên Docker
-        options.set_preference("layers.acceleration.disabled", True)
-        
-        # Không cần thiết lập -profile hay -private nữa vì đã dùng set_preference
-        
-        service = Service(executable_path='/usr/local/bin/geckodriver')
-        
-        try:
-            driver = webdriver.Firefox(service=service, options=options)
-            
-            # Thử thiết lập kích thước cửa sổ trước khi truy cập trang
-            driver.set_window_size(1366, 768)
-            
-            # Đầu tiên truy cập vào một trong các trang giới thiệu
-            referral_site = random.choice(REFERRAL_SITES)
-            with print_lock:
-                print(f"Thread {session_id}: Truy cập {referral_site}")
-            
-            driver.get(referral_site)
-            time.sleep(random.uniform(2, 5))
-            
-            # Nếu đang ở trang YouTube, tìm kiếm và click vào video liên quan
-            if "youtube.com" in referral_site:
-                try:
-                    # Tìm kiếm trên YouTube
-                    search_box = WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.NAME, "search_query"))
-                    )
-                    search_terms = ["ca khúc hay", "bài hát mới", "music video 2023"]
-                    search_box.send_keys(random.choice(search_terms))
-                    search_box.send_keys(Keys.RETURN)
-                    time.sleep(random.uniform(3, 6))
-                except Exception as e:
-                    with print_lock:
-                        print(f"Thread {session_id}: Không thể tìm kiếm trên YouTube: {str(e)}")
-            
-            # Sau đó truy cập video mục tiêu
-            with print_lock:
-                print(f"Thread {session_id}: Truy cập video mục tiêu {url}")
-                
-            driver.get(url)
-            
+        # Use semaphore to limit concurrent browser instances
+        with browser_semaphore:
+            driver = None
             try:
-                # Đợi cho video player xuất hiện
-                WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "video"))
+                # Get optimized Firefox options
+                options = get_optimized_firefox_options(session_id, views_completed)
+                
+                # Create Firefox service with minimal logging
+                service = Service(
+                    executable_path='/usr/local/bin/geckodriver',
+                    log_path=os.devnull
                 )
                 
-                # Làm cho video tự động phát
+                # Initialize driver
+                driver = webdriver.Firefox(service=service, options=options)
+                driver.set_page_load_timeout(20)  # Set timeout for page loads
+                
+                # Access referral site with timeout handling
+                referral_site = random.choice(REFERRAL_SITES)
+                logger.info(f"Thread {session_id}: Accessing {referral_site}")
+                
                 try:
-                    driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.SPACE)
-                except Exception as e:
-                    with print_lock:
-                        print(f"Thread {session_id}: Không thể bắt đầu phát video: {str(e)}")
+                    driver.get(referral_site)
+                    time.sleep(random.uniform(1, 3))  # Reduced wait time
+                except TimeoutException:
+                    logger.warning(f"Thread {session_id}: Timeout accessing referral site, continuing...")
                 
-                # Thời gian xem ngẫu nhiên (trên 30 giây để được tính là view hợp lệ)
-                watch_time = random.uniform(MIN_WATCH_TIME, MIN_WATCH_TIME + 60)
+                # Access target video
+                logger.info(f"Thread {session_id}: Accessing target video {url}")
+                try:
+                    driver.get(url)
+                    
+                    # Wait for video player with reasonable timeout
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "video"))
+                    )
+                    
+                    # Try to start video playback
+                    try:
+                        driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.SPACE)
+                    except Exception:
+                        pass  # Ignore if autoplay works
+                    
+                    # Calculate watch time
+                    watch_time = random.uniform(MIN_WATCH_TIME, MIN_WATCH_TIME + 10)  # Reduced max additional time
+                    
+                    # Minimal human behavior simulation
+                    simulate_human_behavior(driver)
+                    
+                    logger.info(f"Thread {session_id}: Watching video for {watch_time:.1f} seconds")
+                    
+                    # Sleep in smaller chunks to allow for quicker cleanup if needed
+                    chunks = 5
+                    chunk_time = watch_time / chunks
+                    for _ in range(chunks):
+                        time.sleep(chunk_time)
+                        if driver is None:  # Check if driver was closed
+                            break
+                    
+                    # Update view counter
+                    views_completed += 1
+                    with views_lock:
+                        view_counter[0] += 1
+                        total = view_counter[0]
+                    
+                    logger.info(f"Thread {session_id}: Completed {views_completed}/{views_per_thread} views (Total: {total})")
                 
-                # Mô phỏng hành vi người dùng trong khi xem
-                simulate_human_behavior(driver)
+                except TimeoutException:
+                    logger.warning(f"Thread {session_id}: Could not load video within timeout")
                 
-                with print_lock:
-                    print(f"Thread {session_id}: Đang xem video trong {watch_time:.1f} giây")
-                
-                # Đợi hết thời gian xem
-                time.sleep(watch_time)
-                
-                views_completed += 1
-                with print_lock:
-                    print(f"Thread {session_id}: Hoàn thành {views_completed}/{views_per_thread} views")
+                # Reduced delay between views
+                time.sleep(random.uniform(2, 5))
             
-            except TimeoutException:
-                with print_lock:
-                    print(f"Thread {session_id}: Không thể tải video trong thời gian chờ")
-            
-            # Thời gian nghỉ ngẫu nhiên giữa các lần xem để tránh bị phát hiện
-            time.sleep(random.uniform(5, 15))
-        
-        except Exception as e:
-            with print_lock:
-                print(f"Thread {session_id} gặp lỗi: {str(e)}")
-        
-        finally:
-            try:
-                driver.quit()
             except Exception as e:
-                with print_lock:
-                    print(f"Thread {session_id}: Lỗi khi đóng driver: {str(e)}")
+                logger.error(f"Thread {session_id} error: {str(e)}")
+            
+            finally:
+                # Ensure driver is properly closed to free resources
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception as e:
+                        logger.error(f"Thread {session_id}: Error closing driver: {str(e)}")
                 
-        # Tạo độ trễ ngẫu nhiên giữa các lần mở trình duyệt mới
-        time.sleep(random.uniform(3, 8))
+                # Clean up profile directory to free disk space
+                try:
+                    profile_path = os.path.join(PROFILES_DIR, f"profile-{session_id}-{views_completed}")
+                    if os.path.exists(profile_path):
+                        import shutil
+                        shutil.rmtree(profile_path, ignore_errors=True)
+                except Exception:
+                    pass
 
-
-url = "https://www.youtube.com/watch?v=OFQQt_g4ghE"  # URL video mục tiêu
-total_views = 1000  # Tổng số view cần đạt
-num_threads = 5  # Số luồng chạy song song
-
-print(f"Bắt đầu cày {total_views} views cho video: {url}")
-print(f"Sử dụng {num_threads} luồng chạy song song")
-
-# Chia số views cho mỗi thread
-views_per_thread = total_views // num_threads
-remaining_views = total_views % num_threads
-
-# Tạo và chạy các threads
-with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-    futures = []
-    for i in range(num_threads):
-        # Phân bổ số view còn dư vào các thread đầu tiên
-        thread_views = views_per_thread + (1 if i < remaining_views else 0)
-        futures.append(executor.submit(view_video, url, i+1, thread_views))
+def main():
+    url = "https://www.youtube.com/watch?v=OFQQt_g4ghE"  # Target video URL
+    total_views = 1000  # Total views target
+    num_threads = 10  # Increased thread count with limited concurrent browsers
     
-    # Đợi tất cả các thread hoàn thành
-    concurrent.futures.wait(futures)
+    logger.info(f"Starting {total_views} views for video: {url}")
+    logger.info(f"Using {num_threads} threads with max {MAX_CONCURRENT_BROWSERS} concurrent browsers")
+    
+    # Views counter shared between threads
+    view_counter = [0]
+    
+    # Calculate views per thread
+    views_per_thread = total_views // num_threads
+    remaining_views = total_views % num_threads
+    
+    # Create and run threads with resource management
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = []
+        for i in range(num_threads):
+            thread_views = views_per_thread + (1 if i < remaining_views else 0)
+            futures.append(executor.submit(view_video, url, i+1, thread_views, view_counter))
+        
+        # Wait for all threads to complete
+        wait(futures)
+    
+    logger.info(f"Completed {view_counter[0]} views!")
 
-print(f"Đã hoàn thành {total_views} views!")
+if __name__ == "__main__":
+    main()

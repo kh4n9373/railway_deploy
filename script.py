@@ -195,7 +195,7 @@ def view_video(url, session_id, views_per_thread):
 
 url = "https://www.youtube.com/watch?v=OFQQt_g4ghE"  # URL video mục tiêu
 total_views = 1000  # Tổng số view cần đạt
-num_threads = 10  # Số luồng chạy song song
+num_threads = 3  # Số luồng chạy song song
 
 print(f"Bắt đầu cày {total_views} views cho video: {url}")
 print(f"Sử dụng {num_threads} luồng chạy song song")

@@ -1,43 +1,51 @@
-# Use a more stable Python base image
-FROM python:3.9-bullseye
+# Use Debian Bullseye as base for better Firefox compatibility
+FROM debian:bullseye-slim
 
-# Set working directory in container
+# Set working directory
 WORKDIR /app
 
-# Install necessary dependencies for Firefox and Selenium
+# Install required dependencies
 RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
     firefox-esr \
     wget \
     bzip2 \
     xvfb \
-    libxtst6 \
-    libgtk-3-0 \
+    dbus-x11 \
     libdbus-glib-1-2 \
+    libgtk-3-0 \
     libx11-xcb1 \
     libxt6 \
     libpci3 \
     procps \
-    dbus \
-    fontconfig \
+    psmisc \
     libcairo2 \
     libpango-1.0-0 \
-    sudo \
+    xfce4-terminal \
+    libatk1.0-0 \
+    libasound2 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libnspr4 \
+    libnss3 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Create directory for Firefox profiles with proper permissions
+# Install Python packages
+RUN pip3 install --no-cache-dir selenium==4.10.0 psutil
+
+# Create directories
 RUN mkdir -p /tmp/firefox_profiles && chmod 777 /tmp/firefox_profiles
 RUN mkdir -p /tmp/logs && chmod 777 /tmp/logs
 
-# Download and install the latest stable geckodriver (0.33.0) for better compatibility with Firefox ESR
-RUN wget https://github.com/mozilla/geckodriver/releases/download/v0.33.0/geckodriver-v0.33.0-linux64.tar.gz \
-    && tar -xzf geckodriver-v0.33.0-linux64.tar.gz \
+# Download older, more stable geckodriver
+RUN wget https://github.com/mozilla/geckodriver/releases/download/v0.32.0/geckodriver-v0.32.0-linux64.tar.gz \
+    && tar -xzf geckodriver-v0.32.0-linux64.tar.gz \
     && chmod +x geckodriver \
     && mv geckodriver /usr/local/bin/ \
-    && rm geckodriver-v0.33.0-linux64.tar.gz
-
-# Install Python packages needed for the script
-RUN pip install --no-cache-dir selenium==4.12.0 requests
+    && rm geckodriver-v0.32.0-linux64.tar.gz
 
 # Copy script to container
 COPY script.py /app/
@@ -46,35 +54,44 @@ COPY script.py /app/
 ENV DISPLAY=:99
 ENV MOZ_HEADLESS=1
 ENV PYTHONUNBUFFERED=1
+ENV NUM_THREADS=3
+ENV TOTAL_VIEWS=1000
+ENV MAX_RETRIES=3
 
-# Create startup script with proper error handling
+# Create startup script
 RUN echo '#!/bin/bash\n\
 # Start Xvfb\n\
-Xvfb :99 -screen 0 1366x768x24 -ac &\n\
+echo "Starting Xvfb..."\n\
+Xvfb :99 -screen 0 1366x768x24 -ac +extension GLX +render -noreset &\n\
 XVFB_PID=$!\n\
-echo "Started Xvfb with PID: $XVFB_PID"\n\
 \n\
-# Wait for Xvfb to start\n\
+# Start a lightweight window manager\n\
+echo "Ensuring X server is running..."\n\
 sleep 2\n\
 \n\
-# Check if geckodriver is available\n\
-if [ ! -f /usr/local/bin/geckodriver ]; then\n\
-    echo "ERROR: geckodriver not found!"\n\
-    exit 1\n\
-fi\n\
+# Verify Firefox installation\n\
+echo "Checking Firefox installation..."\n\
+firefox-esr --version\n\
 \n\
-# Check if Firefox is available\n\
-if ! command -v firefox-esr &> /dev/null; then\n\
-    echo "ERROR: Firefox not found!"\n\
-    exit 1\n\
-fi\n\
+# Verify geckodriver installation\n\
+echo "Checking geckodriver installation..."\n\
+geckodriver --version\n\
 \n\
-# Run script with error handling\n\
+# Start DBUS\n\
+echo "Starting DBUS..."\n\
+mkdir -p /var/run/dbus\n\
+dbus-daemon --system || true\n\
+\n\
+# Run the script\n\
 echo "Starting YouTube view bot..."\n\
-python /app/script.py 2>&1 | tee /tmp/logs/script.log\n\
+python3 /app/script.py 2>&1 | tee /tmp/logs/script.log\n\
 SCRIPT_EXIT=$?\n\
 \n\
-# Kill Xvfb when done\n\
+# Clean up\n\
+echo "Cleaning up..."\n\
+pkill -f firefox || true\n\
+pkill -f geckodriver || true\n\
+\n\
 if ps -p $XVFB_PID > /dev/null; then\n\
     kill $XVFB_PID\n\
 fi\n\
@@ -82,9 +99,4 @@ fi\n\
 exit $SCRIPT_EXIT' > /app/run.sh \
     && chmod +x /app/run.sh
 
-# Set healthcheck to ensure container is running properly
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD ps aux | grep -q [X]vfb || exit 1
-
-# Set container entrypoint
 CMD ["/app/run.sh"]

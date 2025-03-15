@@ -47,7 +47,7 @@ LOGS_DIR = "/tmp/logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 # Environment variables with defaults
-NUM_THREADS = int(os.environ.get("NUM_THREADS", 5))
+NUM_THREADS = int(os.environ.get("NUM_THREADS", 3))
 TOTAL_VIEWS = int(os.environ.get("TOTAL_VIEWS", 1000))
 TARGET_URL = os.environ.get("TARGET_URL", "https://www.youtube.com/watch?v=OFQQt_g4ghE")
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", 3))
@@ -130,16 +130,14 @@ def create_driver(session_id, profile_id):
     log_path = os.path.join(LOGS_DIR, f"geckodriver-{session_id}-{profile_id}.log")
     service = Service(
         executable_path='/usr/local/bin/geckodriver',
-        log_path=log_path,
-        log_output=log_path  # Handle deprecation warning
+        log_path=log_path
     )
     
     try:
-        # Create driver with proper configuration
+        # Create driver with proper configuration - FIXED: removed service_log_path
         driver = webdriver.Firefox(
             service=service, 
-            options=options,
-            service_log_path=log_path  # Redundant but ensures logging works
+            options=options
         )
         driver.set_page_load_timeout(30)
         return driver

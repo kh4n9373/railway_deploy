@@ -80,7 +80,10 @@ def view_video(url, session_id, views_per_thread):
         
         # Thiết lập Firefox headless đúng cách
         options.add_argument("--headless")
-        
+        options.add_argument("--disable-dev-shm-usage")  # Hạn chế lỗi bộ nhớ chia sẻ
+        options.add_argument("--no-sandbox")  # Tắt sandbox để tránh lỗi
+        options.add_argument("--window-size=1280x1024")
+                
         # Sử dụng user agent ngẫu nhiên
         user_agent = random.choice(USER_AGENTS)
         options.set_preference("general.useragent.override", user_agent)
